@@ -81,6 +81,70 @@ _JAVA_CASES = [
         [],
         "a plain helper call in a loop is not a sink",
     ),
+    (
+        "class A{void m(java.util.List<String> ks, Settings settings){"
+        "for(String k:ks){ settings.getByPrefix(k); }}}",
+        [],
+        "a ...By[A-Z] name on a non-repository receiver is not a derived query",
+    ),
+    (
+        "class A{void m(java.util.List<byte[]> bs){"
+        "for(byte[] b:bs){ java.net.InetAddress.getByAddress(b); }}}",
+        [],
+        "a static factory named like a derived query is not db",
+    ),
+    (
+        "class A{void m(java.util.List<String> ids, UserRepository userRepository){"
+        "for(String id:ids){ userRepository.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query on a repository-named receiver is db without an import",
+    ),
+    (
+        "import org.springframework.data.jpa.repository.JpaRepository;\n"
+        "class A{void m(java.util.List<String> ids, Users users){"
+        "for(String id:ids){ users.findByEmail(id); }}}",
+        [("io_in_loop", "db")],
+        "a derived query in a file importing Spring Data is db",
+    ),
+    (
+        "import java.sql.JDBCType;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a type-only java.sql import is not db evidence",
+    ),
+    (
+        "import static java.sql.Types.BIGINT;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "a static-imported java.sql constant is not db evidence",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> ks, java.util.Map<String,String> m){"
+        "for(String k:ks){ m.get(k); }}}",
+        [],
+        "JDBC evidence does not license get, which JDBC has no verb for",
+    ),
+    (
+        "import java.sql.Statement;\n"
+        "class A{void m(java.util.List<String> qs, Statement st){"
+        "for(String q:qs){ st.execute(q); }}}",
+        [("io_in_loop", "db")],
+        "JDBC evidence licenses execute",
+    ),
+    (
+        "class A{void m(java.util.List<Ctx> cs){for(Ctx c:cs){ executeQuery(c); }}}",
+        [],
+        "a bare executeQuery is the class's own method, not a JDBC statement",
+    ),
+    (
+        "class A{void m(java.util.List<java.lang.module.ModuleFinder> fs){"
+        "for(java.lang.module.ModuleFinder f:fs){ f.findAll(); }}}",
+        [],
+        "a shared repository verb on a non-repository receiver is not db",
+    ),
 ]
 
 
@@ -183,6 +247,13 @@ _CSHARP_CASES = [
         # Awaited EF query in a loop: io_in_loop + the serial_await co-signal.
         [("io_in_loop", "db"), ("serial_await_in_loop", "db")],
         "EF *Async family is unambiguous db (no import gate)",
+    ),
+    (
+        "class A{ void M(System.Collections.Generic.List<int> ids){"
+        "foreach(var id in ids){ _ = SaveChangesAsync(); }}"
+        " System.Threading.Tasks.Task SaveChangesAsync() => null; }",
+        [],
+        "a bare SaveChangesAsync is the class's own method, not a DbContext call",
     ),
 ]
 
@@ -1144,6 +1215,18 @@ _KOTLIN_CASES = [
         "    for (id in ids) {\n        userRepository.findByEmail(id)\n    }\n}\n",
         [("io_in_loop", "db")],
         "a derived query on a repository instance still classifies",
+    ),
+    (
+        "fun m(ks: List<String>, settings: Settings) {\n"
+        "    for (k in ks) {\n        settings.getByPrefix(k)\n    }\n}\n",
+        [],
+        "a lower-case receiver alone does not make a ...By[A-Z] call a derived query",
+    ),
+    (
+        "fun m(texts: List<String>, re: Regex) {\n"
+        "    for (t in texts) {\n        re.findAll(t)\n    }\n}\n",
+        [],
+        "Regex.findAll is not a repository findAll",
     ),
     (
         "fun m(xs: List<String>) {\n"

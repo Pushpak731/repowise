@@ -35,7 +35,20 @@ from ....ingestion.external_systems.io_kind import classify_io_kind
 
 # Tokens that are syntax, not bindable import names.
 _IMPORT_KW: frozenset[str] = frozenset(
-    {"import", "from", "as", "require", "const", "let", "var", "default", "type", "typeof", "use"}
+    {
+        "import",
+        "from",
+        "as",
+        "require",
+        "const",
+        "let",
+        "var",
+        "default",
+        "type",
+        "typeof",
+        "use",
+        "static",
+    }
 )
 
 
