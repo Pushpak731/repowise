@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.analysis.finding_registry import excluded_types
+from repowise.core.analysis.health.complexity.dispatch import DISPATCH_SHARE
 from repowise.core.analysis.health.models import primary_finding, split_by_origin
 from repowise.core.analysis.health.perf.causal import code_context
 from repowise.core.analysis.health.perf.opportunity_rank import (
@@ -131,10 +132,6 @@ DEFAULT_LIMIT = 10
 SIZE_MARKERS = frozenset(
     {"complex_method", "nested_complexity", "brain_method", "large_method", "bumpy_road"}
 )
-#: A function whose largest dispatch on one value holds this share of its
-#: decision points is usually fine as it is. Fitted on the dev labels only:
-#: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
-DISPATCH_SHARE = 0.6
 #: A function-level complexity unit needs this many code lines or this CCN.
 #: Picked on the dev labels (67 complexity rows): 30 / 15 drops 13 rejected
 #: small functions and 4 accepted ones; no cut that keeps every accepted row

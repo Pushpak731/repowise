@@ -42,9 +42,13 @@ this is not a linter.
 **`nested_complexity` — pure AST.** tree-sitter parses the file into a syntax
 tree. A walker descends it tracking control-flow depth, incrementing on each
 `if` / `for` / `while` / `try` / `switch` node. If any function reaches depth 4
-or more, the marker fires, and severity scales with the depth it reached. No
-heuristics about intent, no model, no sampling. The same commit produces the
-same finding forever.
+or more, the marker fires, and severity scales with the depth it reached. A
+function that is mostly one dispatch on one value (a `switch`, `match` or
+same-subject `if` chain holding at least 60% of its decision points) is judged
+outside that dispatch: `nested_complexity` does not count the two levels the
+`switch` and its `case` open, and `complex_method`, `brain_method` and
+`bumpy_road` read the CCN outside it. No heuristics about intent, no model, no
+sampling. The same commit produces the same finding forever.
 
 **`io_in_loop` — AST plus call graph.** The walker finds a call inside a loop
 body and resolves the callee through the same resolver the dependency graph

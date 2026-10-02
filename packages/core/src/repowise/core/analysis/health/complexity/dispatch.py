@@ -7,19 +7,21 @@ construction: a per-node-type handler adds one arm per case, and the arms are
 independent of each other. ``dispatch_share`` lets a reader tell that shape
 apart from a function that is complex all over.
 
+A size or complexity marker reads a function at or above
+:data:`DISPATCH_SHARE` through :func:`judged_ccn` and :func:`judged_nesting`:
+the decision points and nesting outside its one dispatch. A per-case handler is
+flagged only when the code around the dispatch is complex on its own.
+
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
 path). It counts the same nodes :mod:`.cyclomatic` charged, so a flat switch
-that CCN charges one point is one point here too. It is a fact read beside
-CCN; it changes no CCN, threshold or score.
+that CCN charges one point is one point here too. It changes no stored CCN.
 
 "Top level" means not nested inside another branch, case or catch. Loops,
 ``try`` / ``with`` blocks and closures are walked through, since a visitor's
 dispatch usually sits inside the loop that reads the next token, and a
 middleware factory's inside the closure it returns.
 
-The 0.6 cut a consumer reads it against was fitted on labelled dev repos (see
-the tests); it is not a property of the fact.
 """
 
 from __future__ import annotations
@@ -40,6 +42,14 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
+
+#: A function whose largest dispatch on one value holds this share of its
+#: decision points is mostly that dispatch. Fitted on the dev labels only:
+#: share >= 0.6 held 9 labelled complexity rows, 8 of them rejected.
+DISPATCH_SHARE = 0.6
+#: Nesting levels a dispatch opens before its arms' own code: a ``switch`` and
+#: its ``case``. A same-subject ``if`` chain opens one, so this is the bound.
+_DISPATCH_LEVELS = 2
 
 # An ``if`` with one ``elif`` is a decision, not a dispatch; the same holds for
 # a run of guards.
@@ -62,8 +72,11 @@ _COMPARISON_KINDS = frozenset(
 _TYPE_TEST_FUNCTIONS = frozenset({"isinstance", "issubclass", "type", "hasattr"})
 # Methods that test their receiver.
 _RECEIVER_TESTS = frozenset(
-    {"equals", "equalsignorecase", "is_a?", "kind_of?", "instance_of?", "startswith"}
+    {"equals", "equalsignorecase", "matches", "is_a?", "kind_of?", "instance_of?", "startswith"}
 )
+# A receiver that names a constant (``FormatNames.ISO8601.matches(input)``) is
+# the arm's key, so the test is on its argument.
+_CONSTANT_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _LITERAL_MARKERS = ("string", "integer", "number", "float", "true", "false", "null", "nil", "char")
 _MAX_SUBJECT_CHARS = 80
 _SPACE_RE = re.compile(r"\s+")
@@ -132,7 +145,10 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
         if name in _TYPE_TEST_FUNCTIONS and receiver is None and args:
             return _name(args[0])
         if name in _RECEIVER_TESTS:
-            return _name(receiver) or (_name(args[0]) if args else None)
+            subject = _name(receiver)
+            if subject is not None and _CONSTANT_RE.match(subject.rsplit(".", 1)[-1]):
+                subject = None
+            return subject or (_name(args[0]) if args else None)
     return None
 
 
@@ -243,3 +259,23 @@ def dispatch_points(body: Node, lmap: LanguageNodeMap) -> int:
 def dispatch_share(points: int, ccn: int) -> float:
     """*points* as a fraction of the function's decision points, to two decimals."""
     return round(points / (ccn - 1), 2) if ccn > 1 and points > 0 else 0.0
+
+
+def judged_ccn(ccn: int, share: float) -> int:
+    """The CCN a complexity marker judges: outside the dispatch once it dominates."""
+    if share < DISPATCH_SHARE:
+        return ccn
+    return ccn - round(share * (ccn - 1))
+
+
+def judged_nesting(max_nesting: int, share: float) -> int:
+    """The nesting a marker judges: less the dispatch's own levels once it dominates.
+
+    The deepest block of a dominated function is almost always in an arm, so
+    this subtracts the most a dispatch opens. A block that deep outside the
+    dispatch is under-read by the same amount (the ceiling of not tracking
+    which side the deepest block is on).
+    """
+    if share < DISPATCH_SHARE:
+        return max_nesting
+    return max(max_nesting - _DISPATCH_LEVELS, 0)
