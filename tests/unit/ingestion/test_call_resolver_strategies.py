@@ -779,6 +779,7 @@ class TestRepoWideReceiverTier:
     rather than whichever file sorts first.
     """
 
+    _CALLER = "peek/Peek.UITests/PeekTests.cs"
     _RESIZER = (
         "csharp",
         "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
@@ -788,11 +789,6 @@ class TestRepoWideReceiverTier:
         "csharp",
         "namespace Peek.UI\n{\n    public partial class MainWindow\n    {\n"
         "        public void Show() { }\n    }\n}\n",
-    )
-    _PEEK_INHERITS = (
-        "csharp",
-        "namespace Peek.UI\n{\n    public partial class MainWindow : Window\n    {\n"
-        "        public void Close() { }\n    }\n}\n",
     )
 
     @staticmethod
@@ -804,46 +800,57 @@ class TestRepoWideReceiverTier:
             "            var w = new MainWindow();\n            w.Show();\n        }\n    }\n}\n",
         )
 
-    @staticmethod
-    def _show_edges(edges: list[tuple[str, str, float, str]]) -> list[tuple[str, str]]:
-        return [(e[1], e[3]) for e in edges if e[1].endswith("::Show")]
+    def _resolved(
+        self,
+        tmp_path: Path,
+        files: dict[str, tuple[str, str]],
+        method: str = "Show",
+        imports: dict[str, dict[str, str]] | None = None,
+        **resolver_kwargs: object,
+    ) -> list[tuple[str, str]]:
+        """``(callee, origin)`` for every edge onto a method named *method*."""
+        parsed = _parse_all(tmp_path, files)
+        targets: dict[str, set[str]] = {p: set() for p in parsed}
+        for path, links in (imports or {}).items():
+            _link_imports(parsed, {path: links})
+            targets[path] = set(links.values())
+        resolver = CallResolver(parsed, targets, repo_path=str(tmp_path), **resolver_kwargs)
+        return sorted(
+            (rc.callee_id, rc.origin)
+            for path, pf in parsed.items()
+            for rc in resolver.resolve_file(path, pf.calls)
+            if rc.callee_id.endswith(f"::{method}")
+        )
 
     def test_two_same_named_types_declaring_the_method_give_no_edge(
         self, tmp_path: Path
     ) -> None:
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "resizer/MainWindow.xaml.cs": self._RESIZER,
-                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
-                "peek/Peek.UITests/PeekTests.cs": self._test(),
-            },
-        )
-        assert self._show_edges(_edges(parsed, tmp_path)) == []
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+            self._CALLER: self._test(),
+        }
+        assert self._resolved(tmp_path, files) == []
 
     def test_a_same_named_type_that_only_inherits_the_method_gives_no_edge(
         self, tmp_path: Path
     ) -> None:
         """One declaration is not one candidate: the other ``MainWindow`` may be meant."""
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "resizer/MainWindow.xaml.cs": self._RESIZER,
-                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK_INHERITS,
-                "peek/Peek.UITests/PeekTests.cs": self._test(),
-            },
+        inherits = (
+            "csharp",
+            "namespace Peek.UI\n{\n    public partial class MainWindow : Window\n    {\n"
+            "        public void Close() { }\n    }\n}\n",
         )
-        assert self._show_edges(_edges(parsed, tmp_path)) == []
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": inherits,
+            self._CALLER: self._test(),
+        }
+        assert self._resolved(tmp_path, files) == []
 
     def test_the_one_type_of_the_name_keeps_its_edge(self, tmp_path: Path) -> None:
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "resizer/MainWindow.xaml.cs": self._RESIZER,
-                "peek/Peek.UITests/PeekTests.cs": self._test(),
-            },
-        )
-        assert self._show_edges(_edges(parsed, tmp_path)) == [
+        files = {"resizer/MainWindow.xaml.cs": self._RESIZER, self._CALLER: self._test()}
+        assert self._resolved(tmp_path, files) == [
             ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_global")
         ]
 
@@ -853,87 +860,65 @@ class TestRepoWideReceiverTier:
             "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
             "        public void Crop() { }\n    }\n}\n",
         )
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "resizer/MainWindow.xaml.cs": self._RESIZER,
-                "resizer/MainWindow.Crop.cs": crop,
-                "peek/Peek.UITests/PeekTests.cs": self._test(),
-            },
-        )
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "resizer/MainWindow.Crop.cs": crop,
+            self._CALLER: self._test(),
+        }
         fragments = ("resizer/MainWindow.Crop.cs", "resizer/MainWindow.xaml.cs")
-        resolver = CallResolver(
-            parsed,
-            {p: set() for p in parsed},
-            repo_path=str(tmp_path),
-            partial_fragments={(f, "MainWindow"): fragments for f in fragments},
-        )
-        caller = "peek/Peek.UITests/PeekTests.cs"
-        hits = [rc.callee_id for rc in resolver.resolve_file(caller, parsed[caller].calls)]
-        assert "resizer/MainWindow.xaml.cs::MainWindow::Show" in hits
+        assert self._resolved(
+            tmp_path, files, partial_fragments={(f, "MainWindow"): fragments for f in fragments}
+        ) == [("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_global")]
 
     def test_a_using_that_names_the_namespace_keeps_the_edge(self, tmp_path: Path) -> None:
-        caller = "peek/Peek.UITests/PeekTests.cs"
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "resizer/MainWindow.xaml.cs": self._RESIZER,
-                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
-                caller: self._test("using ImageResizer.Views;\n"),
-            },
-        )
-        _link_imports(parsed, {caller: {"ImageResizer.Views": "resizer/MainWindow.xaml.cs"}})
-        targets: dict[str, set[str]] = {p: set() for p in parsed}
-        targets[caller] = {"resizer/MainWindow.xaml.cs"}
-        assert self._show_edges(_edges(parsed, tmp_path, targets)) == [
+        files = {
+            "resizer/MainWindow.xaml.cs": self._RESIZER,
+            "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+            self._CALLER: self._test("using ImageResizer.Views;\n"),
+        }
+        imports = {self._CALLER: {"ImageResizer.Views": "resizer/MainWindow.xaml.cs"}}
+        assert self._resolved(tmp_path, files, imports=imports) == [
             ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_import")
         ]
 
     def test_csharp_arity_tells_a_generic_from_its_plain_twin(self, tmp_path: Path) -> None:
         """``Policy`` and ``Policy<T>`` are two types; the receiver's arity picks one."""
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "src/Policy.cs": (
-                    "csharp",
-                    "namespace P\n{\n    public partial class Policy\n    {\n"
-                    "        public static void Handle() { }\n"
-                    "        public void Execute() { }\n    }\n}\n",
-                ),
-                "src/PolicyT.cs": (
-                    "csharp",
-                    "namespace P\n{\n    public partial class Policy<TResult>\n    {\n"
-                    "        public void Execute() { }\n    }\n}\n",
-                ),
-                "src/Use.cs": (
-                    "csharp",
-                    "namespace P\n{\n    public class Use\n    {\n"
-                    "        public void Run(Policy<int> g, Policy p)\n        {\n"
-                    "            Policy.Handle();\n            g.Execute();\n"
-                    "            p.Execute();\n        }\n    }\n}\n",
-                ),
-            },
-        )
-        assert sorted((e[1], e[3]) for e in _edges(parsed, tmp_path)) == [
-            ("src/Policy.cs::Policy::Execute", "receiver_typed_global"),
-            ("src/Policy.cs::Policy::Handle", "receiver_global"),
-            ("src/PolicyT.cs::Policy::Execute", "receiver_typed_global"),
+        files = {
+            "src/Policy.cs": (
+                "csharp",
+                "namespace P\n{\n    public partial class Policy\n    {\n"
+                "        public static void Handle() { }\n"
+                "        public void Show() { }\n    }\n}\n",
+            ),
+            "src/PolicyT.cs": (
+                "csharp",
+                "namespace P\n{\n    public partial class Policy<TResult>\n    {\n"
+                "        public void Show() { }\n    }\n}\n",
+            ),
+            "src/Use.cs": (
+                "csharp",
+                "namespace P\n{\n    public class Use\n    {\n"
+                "        public void Run(Policy<int> g, Policy p)\n        {\n"
+                "            Policy.Handle();\n            g.Show();\n"
+                "            p.Show();\n        }\n    }\n}\n",
+            ),
+        }
+        assert self._resolved(tmp_path, files) == [
+            ("src/Policy.cs::Policy::Show", "receiver_typed_global"),
+            ("src/PolicyT.cs::Policy::Show", "receiver_typed_global"),
+        ]
+        assert self._resolved(tmp_path, files, "Handle") == [
+            ("src/Policy.cs::Policy::Handle", "receiver_global")
         ]
 
     def test_python_classes_sharing_a_name_give_no_edge(self, tmp_path: Path) -> None:
         graph = "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n"
-        parsed = _parse_all(
-            tmp_path,
-            {
-                "run.py": (
-                    "python",
-                    "def run():\n    graph = DependencyGraph()\n    graph.add_arc(1)\n",
-                ),
-                "a/graph.py": ("python", graph),
-                "b/graph.py": ("python", graph),
-            },
-        )
-        assert [e for e in _edges(parsed, tmp_path) if e[1].endswith("::add_arc")] == []
+        files = {
+            "run.py": ("python", "def run():\n    graph = DependencyGraph()\n    graph.add_arc(1)\n"),
+            "a/graph.py": ("python", graph),
+            "b/graph.py": ("python", graph),
+        }
+        assert self._resolved(tmp_path, files, "add_arc") == []
 
 
 class TestImportedTypeThroughAReExport:
