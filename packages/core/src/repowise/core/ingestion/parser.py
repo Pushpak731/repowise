@@ -1805,9 +1805,19 @@ class ASTParser:
                 continue
 
             raw = _node_text(stmt_node, src).strip()
-            if raw in seen_raws:
+            # A Rust ``mod`` item's text excludes its outer attributes, so two
+            # ``#[cfg]``-gated ``mod imp;`` declarations targeting different
+            # ``#[path]`` files collide on the same raw text and the second
+            # file silently loses its import edge (and is then reported as
+            # dead code). Qualify the dedup key with the path override.
+            dedup_key = raw
+            if language == "rust" and stmt_node.type == "mod_item":
+                mod_path_attr = _rust_mod_path_attribute(stmt_node, src)
+                if mod_path_attr is not None:
+                    dedup_key = f"{raw}|path={mod_path_attr}"
+            if dedup_key in seen_raws:
                 continue
-            seen_raws.add(raw)
+            seen_raws.add(dedup_key)
 
             module_text = _node_text(module_nodes[0], src).strip().strip("\"'` ")
             if not module_text:
