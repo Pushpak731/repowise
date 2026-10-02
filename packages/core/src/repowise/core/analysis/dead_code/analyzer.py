@@ -61,6 +61,7 @@ from .file_reachability import (
     is_file_reachable,
 )
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
+from .module_strings import drop_named_modules
 from .name_occurrences import (
     IDENTIFIER_RE,
     clamp_named_types,
@@ -969,6 +970,7 @@ class DeadCodeAnalyzer:
         type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
         findings = drop_reference_assembly_api(findings, self._source_map, type_names)
         findings = clamp_named_types(findings, self._source_map, type_names)
+        findings = drop_named_modules(findings, self._source_map, self._dynamic_import_files)
         findings = clamp_entry_shaped(
             findings, self._source_map, self._public_top_level_names(findings)
         )
