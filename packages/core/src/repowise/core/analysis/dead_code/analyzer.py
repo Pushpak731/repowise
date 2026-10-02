@@ -66,6 +66,7 @@ from .name_occurrences import (
     clamp_named_types,
     clamp_path_mentions,
     clamp_unverified_absence,
+    drop_bare_name_uses,
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
@@ -208,7 +209,7 @@ def _is_framework_registered(decorators: list[str]) -> bool:
       ``register`` exactly or a ``register_`` stem so that a past participle
       guarding a handler (``@registered_only``) is not read as one.
     """
-    bases = [_decorator_base(d) for d in decorators]
+    bases = _decorator_bases(decorators)
     if any(b.startswith(_FRAMEWORK_DECORATORS) for b in bases):
         return True
     if any(b.endswith(_FRAMEWORK_DECORATOR_SUFFIXES) for b in bases):
@@ -219,6 +220,23 @@ def _is_framework_registered(decorators: list[str]) -> bool:
         segment == "register" or segment.startswith("register_")
         for segment in (b.rsplit(".", 1)[-1] for b in bases)
     )
+
+
+def _decorator_bases(decorators: Iterable[str]) -> list[str]:
+    """The base name of every annotation in *decorators*.
+
+    A Java or Kotlin modifiers blob carries all of a declaration's annotations
+    (``@Fork(1) @State(Scope.Thread) public``), so each blob is split on
+    ``@`` once its quoted arguments are blanked, the way
+    :func:`_is_symbol_deprecated` reads it. Reading only the blob's first
+    annotation missed every one after it.
+    """
+    return [
+        _decorator_base(token)
+        for blob in decorators
+        for token in _QUOTED_STR_RE.sub('""', str(blob)).split("@")
+        if token.strip()
+    ]
 
 
 def _is_receiver_registration(base: str) -> bool:
@@ -962,6 +980,7 @@ class DeadCodeAnalyzer:
         # Same position and for the same reason. This one asks the wider
         # version of the same question â€” not "could an unread file explain
         # this" but "did we look anywhere except the import graph".
+        findings = drop_bare_name_uses(findings, self._source_map)
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)

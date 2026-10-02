@@ -40,6 +40,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # Gradle runs every build and settings script, and applies a precompiled
+    # script plugin (``*.caffeine.gradle.kts``) by its plugin id. None is
+    # ever imported.
+    "*.gradle.kts",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",
@@ -828,6 +832,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Dependent",
     "Factory",
     "Bean",
+    # JMH: the harness instantiates @State classes and runs @Benchmark
+    # methods (and every @BenchmarkMode class) by reflection.
+    "Benchmark",
+    "State",
     # ---- JVM: lifecycle / event / scheduling / messaging callbacks --
     "PostConstruct",
     "PreDestroy",
@@ -1017,6 +1025,9 @@ _NAMESPACE_IMPORT_LANGUAGES: frozenset[str] = frozenset({"csharp"})
 # ``typedef struct _X {...} X`` tag used only through ``X``, a function called
 # through a ``#define`` alias or a ``##``-pasted name, an icall table entry.
 _PREPROCESSED_LANGUAGES: frozenset[str] = frozenset({"c", "cpp", "objectivec"})
+# Languages that use a type from its own package by its bare name, with no
+# import, so a symbol's name written in another code file is taken as a use.
+_BARE_NAME_USE_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin", "scala"})
 
 # Annotations whose *argument* is the signal (``@SuppressWarnings("unused")``),
 # matched against the raw decorator text rather than its base name.
