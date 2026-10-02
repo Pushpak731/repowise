@@ -7,10 +7,11 @@ construction: a per-node-type handler adds one arm per case, and the arms are
 independent of each other. ``dispatch_share`` lets a reader tell that shape
 apart from a function that is complex all over.
 
-A size or complexity marker reads a function at or above
-:data:`DISPATCH_SHARE` through :func:`judged_ccn` and :func:`judged_nesting`:
-the decision points and nesting outside its one dispatch. A per-case handler is
-flagged only when the code around the dispatch is complex on its own.
+A complexity marker reads a function at or above :data:`DISPATCH_SHARE`
+through :func:`judged_ccn` and :func:`judged_nesting`: the decision points
+outside its one dispatch plus those of its heaviest arm, and its nesting less
+the levels the dispatch opens. A per-case handler is flagged when the code
+around the dispatch, or one of its arms, is complex on its own.
 
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
+    from .models import FunctionComplexity
 
 #: A function whose largest dispatch on one value holds this share of its
 #: decision points is mostly that dispatch. Fitted on the dev labels only:
@@ -55,6 +57,8 @@ _DISPATCH_LEVELS = 2
 # a run of guards.
 _MIN_ARMS = 3
 
+# The ``else`` part of an ``if`` where a grammar gives it no ``alternative`` field.
+_ELSE_KINDS = frozenset({"else_clause", "else"})
 _WRAPPER_KINDS = frozenset({"parenthesized_expression", "condition_clause"})
 _COMPARISON_KINDS = frozenset(
     {
@@ -206,9 +210,41 @@ class _Siblings(NamedTuple):
     children: list[Node]
 
 
+class Dispatch(NamedTuple):
+    """A function's largest dispatch: its decision points and its heaviest arm's."""
+
+    points: int = 0
+    arm: int = 0
+
+
 def _points(nodes: list[Node], lmap: LanguageNodeMap) -> int:
     """Decision points the CCN walk charges inside *nodes*."""
     return _walk_function_body(_Siblings(nodes), lmap)[0] - 1  # type: ignore[arg-type]
+
+
+def _if_arm_points(node: Node, lmap: LanguageNodeMap) -> int:
+    """Decision points in one ``if`` arm's body, not its condition or ``else``."""
+    skip = {
+        c.id
+        for c in (node.child_by_field_name("condition"), node.child_by_field_name("alternative"))
+        if c is not None
+    }
+    body = [
+        c
+        for c in node.named_children
+        if c.id not in skip and c.type not in _ELSE_KINDS and not _is_elif_continuation(c)
+    ]
+    return _points(body, lmap)
+
+
+def _if_dispatch(nodes: list[Node], arms: list[Node], lmap: LanguageNodeMap) -> Dispatch:
+    """A same-subject ``if`` chain (one node) or guard run (its ``if`` nodes)."""
+    return Dispatch(_points(nodes, lmap), max(_if_arm_points(a, lmap) for a in arms))
+
+
+def _switch_dispatch(node: Node, cases: list[Node], lmap: LanguageNodeMap) -> Dispatch:
+    """A ``switch`` / ``match``; an arm's own case point is the dispatch's, not the arm's."""
+    return Dispatch(_points([node], lmap), max(_points([c], lmap) - 1 for c in cases))
 
 
 def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]:
@@ -231,33 +267,35 @@ def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]
     return runs
 
 
-def dispatch_points(body: Node, lmap: LanguageNodeMap) -> int:
-    """Decision points inside the largest top-level dispatch on one subject."""
+def _dispatches(children: list[Node], lmap: LanguageNodeMap) -> list[Dispatch]:
+    """Every dispatch among one parent's *children*: guard runs, chains, switches."""
+    found = [_if_dispatch(run, run, lmap) for run in _guard_runs(children, lmap)]
+    for node in children:
+        if node.type in lmap.switch_kinds and _has_subject(node):
+            cases = [c for c in _collect_case_children(node, lmap) if c.is_named]
+            if cases:
+                found.append(_switch_dispatch(node, cases, lmap))
+        elif (
+            node.type in lmap.branch_kinds
+            and node.type in _ELSE_IF_NODE_KINDS
+            and not _is_elif_continuation(node)
+        ):
+            arms = _chain_arms(node)
+            if _one_subject(arms, lmap):
+                found.append(_if_dispatch([node], arms, lmap))
+    return found
+
+
+def dispatch_points(body: Node, lmap: LanguageNodeMap) -> Dispatch:
+    """The largest top-level dispatch on one subject, by decision points."""
     stop_kinds = lmap.case_kinds | lmap.catch_kinds | lmap.function_kinds
-    best = 0
+    descend_past = stop_kinds | lmap.switch_kinds | lmap.branch_kinds
+    best = Dispatch()
     stack: list[Node] = [body]
     while stack:
-        parent = stack.pop()
-        children = [c for c in parent.children if c.is_named]
-        for run in _guard_runs(children, lmap):
-            best = max(best, _points(run, lmap))
-        for node in children:
-            if node.type in lmap.switch_kinds:
-                if _has_subject(node) and any(
-                    c.is_named for c in _collect_case_children(node, lmap)
-                ):
-                    best = max(best, _points([node], lmap))
-                continue
-            if node.type in lmap.branch_kinds:
-                if (
-                    node.type in _ELSE_IF_NODE_KINDS
-                    and not _is_elif_continuation(node)
-                    and _one_subject(_chain_arms(node), lmap)
-                ):
-                    best = max(best, _points([node], lmap))
-                continue
-            if node.type not in stop_kinds:
-                stack.append(node)
+        children = [c for c in stack.pop().children if c.is_named]
+        best = max([best, *_dispatches(children, lmap)])
+        stack.extend(c for c in children if c.type not in descend_past)
     return best
 
 
@@ -266,21 +304,26 @@ def dispatch_share(points: int, ccn: int) -> float:
     return round(points / (ccn - 1), 2) if ccn > 1 and points > 0 else 0.0
 
 
-def judged_ccn(ccn: int, share: float) -> int:
-    """The CCN a complexity marker judges: outside the dispatch once it dominates."""
-    if share < DISPATCH_SHARE:
-        return ccn
-    return ccn - round(share * (ccn - 1))
+def judged_ccn(fn: FunctionComplexity) -> int:
+    """The CCN a complexity marker judges *fn* by.
+
+    Below :data:`DISPATCH_SHARE` that is its CCN. At or above it, the points
+    outside the dispatch plus its heaviest arm's: a switch of one-line cases
+    reads as the code around it, one with a tangled arm as that arm.
+    """
+    if fn.dispatch_share < DISPATCH_SHARE:
+        return fn.ccn
+    return fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm
 
 
-def judged_nesting(max_nesting: int, share: float) -> int:
-    """The nesting a marker judges: less the dispatch's own levels once it dominates.
+def judged_nesting(fn: FunctionComplexity) -> int:
+    """The nesting a marker judges *fn* by: less the dispatch's own levels once it dominates.
 
     The deepest block of a dominated function is almost always in an arm, so
     this subtracts the most a dispatch opens. A block that deep outside the
     dispatch is under-read by the same amount (the ceiling of not tracking
     which side the deepest block is on).
     """
-    if share < DISPATCH_SHARE:
-        return max_nesting
-    return max(max_nesting - _DISPATCH_LEVELS, 0)
+    if fn.dispatch_share < DISPATCH_SHARE:
+        return fn.max_nesting
+    return max(fn.max_nesting - _DISPATCH_LEVELS, 0)

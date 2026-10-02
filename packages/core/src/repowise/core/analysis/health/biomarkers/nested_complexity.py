@@ -20,7 +20,7 @@ class NestedComplexityDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            depth = judged_nesting(fn.max_nesting, fn.dispatch_share)
+            depth = judged_nesting(fn)
             if depth < self._NESTING_THRESHOLD:
                 continue
             severity = (

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from repowise.core.analysis.health.biomarkers.complex_method import ComplexMethodDetector
 from repowise.core.analysis.health.biomarkers.nested_complexity import NestedComplexityDetector
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.complexity.dispatch import judged_ccn, judged_nesting
@@ -498,17 +499,57 @@ def test_new_detail_keys_leave_the_finding_id_unchanged() -> None:
 
 
 @pytest.mark.parametrize(
-    ("ccn", "share", "judged"),
-    [(30, 0.5, 30), (30, 0.6, 13), (12, 1.0, 1), (250, 0.87, 33)],
+    ("ccn", "share", "arm", "judged"),
+    [(30, 0.5, 0, 30), (30, 0.6, 0, 13), (12, 1.0, 0, 1), (250, 0.87, 0, 33), (37, 0.94, 12, 15)],
 )
-def test_judged_ccn_reads_outside_a_dominant_dispatch(ccn: int, share: float, judged: int) -> None:
-    assert judged_ccn(ccn, share) == judged
+def test_judged_ccn_reads_outside_a_dominant_dispatch_and_its_heaviest_arm(
+    ccn: int, share: float, arm: int, judged: int
+) -> None:
+    fn = SimpleNamespace(ccn=ccn, dispatch_share=share, dispatch_arm=arm)
+    assert judged_ccn(fn) == judged
 
 
 def test_judged_nesting_drops_the_dispatch_levels() -> None:
-    assert judged_nesting(4, 0.59) == 4
-    assert judged_nesting(4, 1.0) == 2
-    assert judged_nesting(7, 0.97) == 5
+    assert judged_nesting(SimpleNamespace(max_nesting=4, dispatch_share=0.59)) == 4
+    assert judged_nesting(SimpleNamespace(max_nesting=4, dispatch_share=1.0)) == 2
+    assert judged_nesting(SimpleNamespace(max_nesting=7, dispatch_share=0.97)) == 5
+
+
+def test_heaviest_arm_is_what_the_arm_itself_charges() -> None:
+    fns = _functions(
+        "csharp",
+        """class A {
+  int Flat(int k) { switch (k) { case 1: return 1; case 2: return 2; case 3: return 3; } return 0; }
+  int Fat(int k, int a, int b) {
+    switch (k) {
+      case 1: if (a > 0) { if (b > 0) { return 1; } } return 0;
+      case 2: return 2;
+      case 3: return 3;
+    }
+    return 0;
+  }
+  int Chain(int k, int a) {
+    if (k == 1) { if (a > 0) { return 1; } } else if (k == 2) { return 2; } else if (k == 3) { return 3; }
+    return 0;
+  }
+}""",
+    )
+    assert fns["Flat"].dispatch_arm == 0
+    assert fns["Fat"].dispatch_arm == 2
+    assert fns["Chain"].dispatch_arm == 1
+
+
+def test_a_switch_with_a_tangled_arm_keeps_complex_method() -> None:
+    arm = "".join(f"if (a > {i}) {{ total += {i}; }} " for i in range(9))
+    cases = "".join(f"case {i}: return {i}; " for i in range(2, 12))
+    fns = _functions(
+        "csharp",
+        f"class A {{ int F(int k, int a) {{ int total = 0; switch (k) {{ case 1: {arm}return total; {cases}}} return 0; }} }}",
+    )
+    fn = fns["F"]
+    assert fn.dispatch_share >= 0.6 and fn.dispatch_arm == 9
+    ctx = SimpleNamespace(all_functions=[fn])
+    assert [r.function_name for r in ComplexMethodDetector().detect(ctx)] == ["F"]
 
 
 def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:

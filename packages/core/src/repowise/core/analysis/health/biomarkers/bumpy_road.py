@@ -29,7 +29,7 @@ class BumpyRoadDetector:
         for fn in ctx.all_functions:
             if fn.bumps < self._BUMP_THRESHOLD:
                 continue
-            if judged_ccn(fn.ccn, fn.dispatch_share) < self._CCN_THRESHOLD:
+            if judged_ccn(fn) < self._CCN_THRESHOLD:
                 continue
             severity = (
                 Severity.HIGH

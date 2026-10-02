@@ -28,7 +28,7 @@ class ComplexMethodDetector:
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
         for fn in ctx.all_functions:
-            severity = self.severity_for(judged_ccn(fn.ccn, fn.dispatch_share), fn.nloc)
+            severity = self.severity_for(judged_ccn(fn), fn.nloc)
             if severity is None:
                 continue
             out.append(
