@@ -771,6 +771,171 @@ class TestPythonTypedReceiver:
         assert not [e for e in edges if str(e[3]).startswith("receiver_typed_")]
 
 
+class TestRepoWideReceiverTier:
+    """The global tier answers only for the one type of a name.
+
+    Two projects each declaring a ``MainWindow`` are told apart by nothing
+    that tier sees, so a call naming neither one's namespace gets no edge
+    rather than whichever file sorts first.
+    """
+
+    _RESIZER = (
+        "csharp",
+        "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
+        "        public void Show() { }\n    }\n}\n",
+    )
+    _PEEK = (
+        "csharp",
+        "namespace Peek.UI\n{\n    public partial class MainWindow\n    {\n"
+        "        public void Show() { }\n    }\n}\n",
+    )
+    _PEEK_INHERITS = (
+        "csharp",
+        "namespace Peek.UI\n{\n    public partial class MainWindow : Window\n    {\n"
+        "        public void Close() { }\n    }\n}\n",
+    )
+
+    @staticmethod
+    def _test(usings: str = "") -> tuple[str, str]:
+        return (
+            "csharp",
+            f"{usings}namespace Peek.UITests\n{{\n    public class PeekTests\n    {{\n"
+            "        public void Opens()\n        {\n"
+            "            var w = new MainWindow();\n            w.Show();\n        }\n    }\n}\n",
+        )
+
+    @staticmethod
+    def _show_edges(edges: list[tuple[str, str, float, str]]) -> list[tuple[str, str]]:
+        return [(e[1], e[3]) for e in edges if e[1].endswith("::Show")]
+
+    def test_two_same_named_types_declaring_the_method_give_no_edge(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "resizer/MainWindow.xaml.cs": self._RESIZER,
+                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+                "peek/Peek.UITests/PeekTests.cs": self._test(),
+            },
+        )
+        assert self._show_edges(_edges(parsed, tmp_path)) == []
+
+    def test_a_same_named_type_that_only_inherits_the_method_gives_no_edge(
+        self, tmp_path: Path
+    ) -> None:
+        """One declaration is not one candidate: the other ``MainWindow`` may be meant."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "resizer/MainWindow.xaml.cs": self._RESIZER,
+                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK_INHERITS,
+                "peek/Peek.UITests/PeekTests.cs": self._test(),
+            },
+        )
+        assert self._show_edges(_edges(parsed, tmp_path)) == []
+
+    def test_the_one_type_of_the_name_keeps_its_edge(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "resizer/MainWindow.xaml.cs": self._RESIZER,
+                "peek/Peek.UITests/PeekTests.cs": self._test(),
+            },
+        )
+        assert self._show_edges(_edges(parsed, tmp_path)) == [
+            ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_global")
+        ]
+
+    def test_the_fragments_of_one_partial_type_count_once(self, tmp_path: Path) -> None:
+        crop = (
+            "csharp",
+            "namespace ImageResizer.Views\n{\n    public partial class MainWindow\n    {\n"
+            "        public void Crop() { }\n    }\n}\n",
+        )
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "resizer/MainWindow.xaml.cs": self._RESIZER,
+                "resizer/MainWindow.Crop.cs": crop,
+                "peek/Peek.UITests/PeekTests.cs": self._test(),
+            },
+        )
+        fragments = ("resizer/MainWindow.Crop.cs", "resizer/MainWindow.xaml.cs")
+        resolver = CallResolver(
+            parsed,
+            {p: set() for p in parsed},
+            repo_path=str(tmp_path),
+            partial_fragments={(f, "MainWindow"): fragments for f in fragments},
+        )
+        caller = "peek/Peek.UITests/PeekTests.cs"
+        hits = [rc.callee_id for rc in resolver.resolve_file(caller, parsed[caller].calls)]
+        assert "resizer/MainWindow.xaml.cs::MainWindow::Show" in hits
+
+    def test_a_using_that_names_the_namespace_keeps_the_edge(self, tmp_path: Path) -> None:
+        caller = "peek/Peek.UITests/PeekTests.cs"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "resizer/MainWindow.xaml.cs": self._RESIZER,
+                "peek/Peek.UI/MainWindow.xaml.cs": self._PEEK,
+                caller: self._test("using ImageResizer.Views;\n"),
+            },
+        )
+        _link_imports(parsed, {caller: {"ImageResizer.Views": "resizer/MainWindow.xaml.cs"}})
+        targets: dict[str, set[str]] = {p: set() for p in parsed}
+        targets[caller] = {"resizer/MainWindow.xaml.cs"}
+        assert self._show_edges(_edges(parsed, tmp_path, targets)) == [
+            ("resizer/MainWindow.xaml.cs::MainWindow::Show", "receiver_typed_import")
+        ]
+
+    def test_csharp_arity_tells_a_generic_from_its_plain_twin(self, tmp_path: Path) -> None:
+        """``Policy`` and ``Policy<T>`` are two types; the receiver's arity picks one."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Policy.cs": (
+                    "csharp",
+                    "namespace P\n{\n    public partial class Policy\n    {\n"
+                    "        public static void Handle() { }\n"
+                    "        public void Execute() { }\n    }\n}\n",
+                ),
+                "src/PolicyT.cs": (
+                    "csharp",
+                    "namespace P\n{\n    public partial class Policy<TResult>\n    {\n"
+                    "        public void Execute() { }\n    }\n}\n",
+                ),
+                "src/Use.cs": (
+                    "csharp",
+                    "namespace P\n{\n    public class Use\n    {\n"
+                    "        public void Run(Policy<int> g, Policy p)\n        {\n"
+                    "            Policy.Handle();\n            g.Execute();\n"
+                    "            p.Execute();\n        }\n    }\n}\n",
+                ),
+            },
+        )
+        assert sorted((e[1], e[3]) for e in _edges(parsed, tmp_path)) == [
+            ("src/Policy.cs::Policy::Execute", "receiver_typed_global"),
+            ("src/Policy.cs::Policy::Handle", "receiver_global"),
+            ("src/PolicyT.cs::Policy::Execute", "receiver_typed_global"),
+        ]
+
+    def test_python_classes_sharing_a_name_give_no_edge(self, tmp_path: Path) -> None:
+        graph = "class DependencyGraph:\n    def add_arc(self, obj):\n        return obj\n"
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "run.py": (
+                    "python",
+                    "def run():\n    graph = DependencyGraph()\n    graph.add_arc(1)\n",
+                ),
+                "a/graph.py": ("python", graph),
+                "b/graph.py": ("python", graph),
+            },
+        )
+        assert [e for e in _edges(parsed, tmp_path) if e[1].endswith("::add_arc")] == []
+
+
 class TestImportedTypeThroughAReExport:
     """An import binds the package, not the module that declares the type.
 
