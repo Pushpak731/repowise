@@ -173,26 +173,24 @@ async def load_health_data(
         pop, metric_rows, findings, req, data.test_metric_rows
     )
     data.fix_first = await _read_fix_first(session, repository, pop, req)
-    data.gated = await _read_gated(session, repository, pop, req, data)
+    data.gated = await _read_gated(session, req, data)
     return data
 
 
-async def _read_gated(
-    session: Any, repository: Any, pop: Population, req: HealthRequest, data: HealthData
-) -> dict[str, dict]:
+async def _read_gated(session: Any, req: HealthRequest, data: HealthData) -> dict[str, dict]:
     """What a language gate held back, per layer this call read."""
     refactoring = (
         data.refactoring.page.gated
         if data.refactoring.page
         # Plans only: the queue was not read, so count the plans it held back.
         else await gated_plan_counts(
-            session, repository.id, include_unverified=req.include_unverified
+            session, data.repository.id, include_unverified=req.include_unverified
         )
         if req.plans_requested
         else {}
     )
     layers = {
-        "health": await gated_findings(session, repository, pop, req),
+        "health": await gated_findings(session, data.repository, data.pop, req),
         "refactoring": refactoring,
         "performance": data.performance.page.gated if data.performance.page else {},
     }
