@@ -184,13 +184,14 @@ def _one_subject(arms: list[Node], lmap: LanguageNodeMap) -> bool:
     return len(subjects) == 1 and None not in subjects
 
 
+def _is_chain_head(node: Node) -> bool:
+    """An ``if`` that starts a chain rather than continuing one."""
+    return node.type in _ELSE_IF_NODE_KINDS and not _is_elif_continuation(node)
+
+
 def _is_lone_if(node: Node) -> bool:
     """An ``if`` that neither continues nor is continued by an ``elif``."""
-    return (
-        node.type in _ELSE_IF_NODE_KINDS
-        and not _is_elif_continuation(node)
-        and len(_chain_arms(node)) == 1
-    )
+    return _is_chain_head(node) and len(_chain_arms(node)) == 1
 
 
 def _has_subject(node: Node) -> bool:
@@ -267,22 +268,21 @@ def _guard_runs(children: list[Node], lmap: LanguageNodeMap) -> list[list[Node]]
     return runs
 
 
+def _node_dispatch(node: Node, lmap: LanguageNodeMap) -> Dispatch | None:
+    """*node* as a ``switch`` on a subject or the head of a same-subject ``if`` chain."""
+    if node.type in lmap.switch_kinds:
+        cases = [c for c in _collect_case_children(node, lmap) if c.is_named]
+        return _switch_dispatch(node, cases, lmap) if cases and _has_subject(node) else None
+    if node.type not in lmap.branch_kinds or not _is_chain_head(node):
+        return None
+    arms = _chain_arms(node)
+    return _if_dispatch([node], arms, lmap) if _one_subject(arms, lmap) else None
+
+
 def _dispatches(children: list[Node], lmap: LanguageNodeMap) -> list[Dispatch]:
     """Every dispatch among one parent's *children*: guard runs, chains, switches."""
     found = [_if_dispatch(run, run, lmap) for run in _guard_runs(children, lmap)]
-    for node in children:
-        if node.type in lmap.switch_kinds and _has_subject(node):
-            cases = [c for c in _collect_case_children(node, lmap) if c.is_named]
-            if cases:
-                found.append(_switch_dispatch(node, cases, lmap))
-        elif (
-            node.type in lmap.branch_kinds
-            and node.type in _ELSE_IF_NODE_KINDS
-            and not _is_elif_continuation(node)
-        ):
-            arms = _chain_arms(node)
-            if _one_subject(arms, lmap):
-                found.append(_if_dispatch([node], arms, lmap))
+    found.extend(d for c in children if (d := _node_dispatch(c, lmap)) is not None)
     return found
 
 
