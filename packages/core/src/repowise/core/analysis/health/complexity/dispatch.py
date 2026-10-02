@@ -124,6 +124,14 @@ def _call_parts(node: Node) -> tuple[str, Node | None, list[Node]]:
     return name.rsplit(".", 1)[-1].lower(), receiver, args
 
 
+def _receiver_test_subject(receiver: Node | None, args: list[Node]) -> str | None:
+    """``x.equals(y)`` tests ``x``, unless ``x`` is a literal or a constant key."""
+    subject = _name(receiver)
+    if subject is not None and _CONSTANT_RE.match(subject.rsplit(".", 1)[-1]):
+        subject = None
+    return subject or (_name(args[0]) if args else None)
+
+
 def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
     """The one name a condition tests, ``None`` when it tests no single one."""
     node = _unwrap(node)
@@ -145,10 +153,7 @@ def _subject(node: Node | None, lmap: LanguageNodeMap) -> str | None:
         if name in _TYPE_TEST_FUNCTIONS and receiver is None and args:
             return _name(args[0])
         if name in _RECEIVER_TESTS:
-            subject = _name(receiver)
-            if subject is not None and _CONSTANT_RE.match(subject.rsplit(".", 1)[-1]):
-                subject = None
-            return subject or (_name(args[0]) if args else None)
+            return _receiver_test_subject(receiver, args)
     return None
 
 
